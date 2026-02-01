@@ -147,7 +147,7 @@ struct ClipboardEntry: Identifiable, Codable, Equatable {
     }
 
     /// Returns true if this entry has expired based on the given retention days
-    func isExpired(retentionDays: Int = 7) -> Bool {
+    func isExpired(retentionDays: Int = 3) -> Bool {
         // Pinned entries never expire
         if isPinned {
             return false

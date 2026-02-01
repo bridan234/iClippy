@@ -88,6 +88,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("✅ Accessibility permissions granted")
         } else {
             print("⚠️ Accessibility permissions not yet granted - user will be prompted")
+
+            // Show a friendly reminder after the system prompt
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                self.showAccessibilityPermissionReminder()
+            }
+        }
+    }
+
+    private func showAccessibilityPermissionReminder() {
+        // Check again to see if permission was granted
+        let trusted = AXIsProcessTrusted()
+        if trusted {
+            return // Permission was granted, no need to show reminder
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Accessibility Permission Needed"
+        alert.informativeText = """
+        iClippy needs Accessibility permission for automatic pasting.
+
+        To grant permission:
+        1. Open System Settings → Privacy & Security → Accessibility
+        2. Enable iClippy in the list
+        3. You may need to restart iClippy
+
+        Without this permission, you'll need to paste manually with ⌘V after selecting an item.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Remind Me Later")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            // Open System Settings to Accessibility
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
@@ -129,6 +166,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Handles pasting a clipboard entry into the previously active application
     func pasteEntry(_ entry: ClipboardEntry) {
+        print("🔵 pasteEntry called for: \(entry.preview)")
+
         // Copy the entry to the system clipboard
         clipboardManager?.copyToClipboard(entry)
 
@@ -138,13 +177,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Activate the previous app
         guard let targetApp = previousApp else {
             print("⚠️ No previous app to paste into")
+            // Still copy to clipboard even if no target app
             return
         }
 
+        print("🔵 Activating target app: \(targetApp.localizedName ?? "Unknown")")
         targetApp.activate(options: [.activateIgnoringOtherApps])
 
         // Wait for the app to activate, then simulate paste
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.simulatePaste()
         }
     }
@@ -171,7 +212,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             scriptObject.executeAndReturnError(&error)
 
             if let error = error {
-                print("⚠️ AppleScript paste failed: \(error)")
+                let errorCode = error["NSAppleScriptErrorNumber"] as? Int ?? 0
+
+                if errorCode == -1743 {
+                    // Automation permission denied
+                    print("⚠️ AppleScript paste failed: Automation permission not granted")
+                    showAutomationPermissionAlert()
+                } else {
+                    print("⚠️ AppleScript paste failed: \(error)")
+                }
                 return false
             }
 
@@ -182,7 +231,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    private func showAutomationPermissionAlert() {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Automation Permission Required"
+            alert.informativeText = """
+            iClippy needs permission to control System Events for automatic pasting.
+
+            Please grant permission in:
+            System Settings → Privacy & Security → Automation → iClippy → System Events
+
+            Without this permission, content will be copied to clipboard but you'll need to paste manually with ⌘V.
+            """
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "OK")
+
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                // Open System Settings to Privacy & Security
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
     private func simulatePasteWithCGEvent() {
+        // Check if we have Accessibility permission
+        let trusted = AXIsProcessTrusted()
+
+        if !trusted {
+            print("⚠️ CGEvent paste failed: Accessibility permission not granted")
+            print("ℹ️ Content copied to clipboard - use ⌘V to paste manually")
+            return
+        }
+
         let source = CGEventSource(stateID: .hidSystemState)
 
         // Command+V keydown
