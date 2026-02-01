@@ -24,7 +24,7 @@ A native macOS clipboard manager that keeps track of your clipboard history and 
 
 1. **Clone or download this repository**
    ```bash
-   cd /Users/bridan/Documents/iClippy
+   cd /Users/bridan/Documents/Github/iClippy
    ```
 
 2. **Open the Xcode project**
@@ -47,19 +47,25 @@ A native macOS clipboard manager that keeps track of your clipboard history and 
 
 ```bash
 # Navigate to project directory
-cd /Users/bridan/Documents/iClippy
+cd /Users/bridan/Documents/Github/iClippy
 
 # Build the app
 xcodebuild -project iClippy.xcodeproj \
-  -scheme iClippy \
-  -configuration Release \
-  -derivedDataPath ./build
+   -scheme iClippy \
+   -configuration Release \
+   -derivedDataPath ./build
 
 # The app will be located at:
 # ./build/Build/Products/Release/iClippy.app
 
 # Copy to Applications folder
 cp -r ./build/Build/Products/Release/iClippy.app /Applications/
+```
+
+Or use the build script:
+
+```bash
+./build.sh
 ```
 
 ## First Time Setup
@@ -343,4 +349,4 @@ For issues, questions, or feature requests, please file an issue on the project 
 ---
 
 **Version**: 1.0
-**Last Updated**: 2024
+**Last Updated**: 2026
