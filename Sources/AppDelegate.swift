@@ -1,7 +1,6 @@
 import Cocoa
 import SwiftUI
 import Magnet
-import ServiceManagement
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
@@ -40,8 +39,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Capture the currently active app on launch (if it's not iClippy)
         updatePreviousAppIfNeeded(NSWorkspace.shared.frontmostApplication)
 
-        // Enable launch at login (macOS 13+)
-        configureLaunchAtLogin()
+        // Enable launch at login (default true)
+        LoginItemManager.configureOnLaunch()
 
         // Request accessibility permissions
         requestAccessibilityPermissions()
@@ -99,31 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    // MARK: - Launch at Login
-
-    private func configureLaunchAtLogin() {
-        if #available(macOS 13.0, *) {
-            let service = SMAppService.mainApp
-
-            switch service.status {
-            case .enabled:
-                print("✅ Launch at login already enabled")
-            case .notRegistered:
-                do {
-                    try service.register()
-                    print("✅ Launch at login enabled")
-                } catch {
-                    print("⚠️ Failed to enable launch at login: \(error)")
-                }
-            case .requiresApproval:
-                print("⚠️ Launch at login requires user approval in System Settings")
-            @unknown default:
-                print("⚠️ Launch at login in unknown state")
-            }
-        } else {
-            print("ℹ️ Launch at login requires manual setup on macOS 12")
-        }
-    }
+    // MARK: - Launch at Login handled by LoginItemManager
 
     private func requestAccessibilityPermissions() {
         let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true]

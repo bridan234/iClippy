@@ -86,9 +86,26 @@ iClippy needs two permissions for automatic pasting to work:
 **Note**: Without these permissions, iClippy will still capture and store your clipboard history. You'll just need to paste manually with `⌘V` after selecting an item.
 
 ### Launch at Login
-- On macOS 13+, iClippy registers itself as a login item on first launch.
+- On macOS 13+, iClippy registers itself as a login item on first launch (default: on).
+- You can toggle **Start at login** in the footer of the popover.
 - Manage it in **System Settings → General → Login Items**.
 - On macOS 12, add iClippy manually in Login Items.
+
+## Release & Notarization
+
+To build, sign, notarize, and package:
+```bash
+./release.sh
+```
+
+The script reads credentials from environment variables or a keychain profile (see `release.sh` for details).
+Example:
+```bash
+export DEVELOPER_ID_APP="Developer ID Application: Your Name (TEAMID)"
+export DEVELOPMENT_TEAM="TEAMID"
+export NOTARY_PROFILE="notarytool-profile"
+./release.sh
+```
 
 ## Usage
 
