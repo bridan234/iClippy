@@ -1,6 +1,7 @@
 import Cocoa
 import SwiftUI
 import Magnet
+import ServiceManagement
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
@@ -12,6 +13,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Global hotkey for toggling the popover
     private var hotKey: HotKey?
+
+    /// Paste timing tuning
+    private let pasteActivationTimeout: TimeInterval = 1.0
+    private let pasteActivationPollInterval: TimeInterval = 0.05
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Set app activation policy to accessory (no dock icon)
@@ -31,6 +36,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Set up workspace notifications to track previous app
         setupWorkspaceNotifications()
+
+        // Capture the currently active app on launch (if it's not iClippy)
+        updatePreviousAppIfNeeded(NSWorkspace.shared.frontmostApplication)
+
+        // Enable launch at login (macOS 13+)
+        configureLaunchAtLogin()
 
         // Request accessibility permissions
         requestAccessibilityPermissions()
@@ -78,6 +89,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+
+        // Track when other apps deactivate (useful when iClippy becomes active)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(applicationDidDeactivate),
+            name: NSWorkspace.didDeactivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    // MARK: - Launch at Login
+
+    private func configureLaunchAtLogin() {
+        if #available(macOS 13.0, *) {
+            let service = SMAppService.mainApp
+
+            switch service.status {
+            case .enabled:
+                print("✅ Launch at login already enabled")
+            case .notRegistered:
+                do {
+                    try service.register()
+                    print("✅ Launch at login enabled")
+                } catch {
+                    print("⚠️ Failed to enable launch at login: \(error)")
+                }
+            case .requiresApproval:
+                print("⚠️ Launch at login requires user approval in System Settings")
+            @unknown default:
+                print("⚠️ Launch at login in unknown state")
+            }
+        } else {
+            print("ℹ️ Launch at login requires manual setup on macOS 12")
+        }
     }
 
     private func requestAccessibilityPermissions() {
@@ -135,10 +180,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Don't track iClippy itself
-        if app.bundleIdentifier != Bundle.main.bundleIdentifier {
-            previousApp = app
+        updatePreviousAppIfNeeded(app)
+    }
+
+    @objc private func applicationDidDeactivate(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+            return
         }
+
+        updatePreviousAppIfNeeded(app)
+    }
+
+    private func updatePreviousAppIfNeeded(_ app: NSRunningApplication?) {
+        guard let app = app else { return }
+        guard app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+        previousApp = app
     }
 
     // MARK: - Popover Management
@@ -150,10 +206,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.close()
         } else {
             // Track the current frontmost app before showing popover
-            if let frontmost = NSWorkspace.shared.frontmostApplication,
-               frontmost.bundleIdentifier != Bundle.main.bundleIdentifier {
-                previousApp = frontmost
-            }
+            updatePreviousAppIfNeeded(NSWorkspace.shared.frontmostApplication)
 
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
 
@@ -182,11 +235,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         print("🔵 Activating target app: \(targetApp.localizedName ?? "Unknown")")
-        targetApp.activate(options: [.activateIgnoringOtherApps])
+        activateAndPaste(targetApp)
+    }
 
-        // Wait for the app to activate, then simulate paste
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+    private func activateAndPaste(_ app: NSRunningApplication) {
+        app.activate(options: [.activateIgnoringOtherApps])
+
+        waitForActivation(of: app, timeout: pasteActivationTimeout) { [weak self] in
             self?.simulatePaste()
+        }
+    }
+
+    private func waitForActivation(of app: NSRunningApplication, timeout: TimeInterval, completion: @escaping () -> Void) {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        func check() {
+            if app.isActive || NSWorkspace.shared.frontmostApplication?.bundleIdentifier == app.bundleIdentifier {
+                completion()
+                return
+            }
+
+            if Date() >= deadline {
+                completion()
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + pasteActivationPollInterval) {
+                check()
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + pasteActivationPollInterval) {
+            check()
         }
     }
 

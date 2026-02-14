@@ -49,6 +49,15 @@ A lightweight macOS clipboard manager that lives in your menu bar. iClippy captu
 
    The app will be built in Release mode and automatically launched.
 
+### Packaging (DMG/ZIP)
+
+To create installable artifacts:
+```bash
+./package.sh
+```
+
+The script produces `.dmg` and `.zip` files in `./dist`. Install by opening the DMG and dragging `iClippy.app` into `/Applications`.
+
 ### Manual Build with Xcode
 
 1. Open `iClippy.xcodeproj` in Xcode
@@ -75,6 +84,11 @@ iClippy needs two permissions for automatic pasting to work:
   2. Find **iClippy** and enable **System Events**
 
 **Note**: Without these permissions, iClippy will still capture and store your clipboard history. You'll just need to paste manually with `⌘V` after selecting an item.
+
+### Launch at Login
+- On macOS 13+, iClippy registers itself as a login item on first launch.
+- Manage it in **System Settings → General → Login Items**.
+- On macOS 12, add iClippy manually in Login Items.
 
 ## Usage
 
