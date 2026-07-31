@@ -15,16 +15,16 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/Clipy/Magnet.git", from: "3.4.0")
+        .package(url: "https://github.com/Clipy/Magnet.git", from: "3.5.0")
     ],
     targets: [
         .executableTarget(
             name: "iClippy",
             dependencies: ["Magnet"],
             path: "Sources",
-            resources: [
-                .process("Info.plist")
-            ]
+            // Info.plist is the app bundle's own plist, copied in by make-app.sh.
+            // SwiftPM refuses it as a top-level resource, so keep it out of the target.
+            exclude: ["Info.plist"]
         )
     ]
 )

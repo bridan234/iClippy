@@ -1,30 +1,18 @@
 #!/bin/bash
 
 # iClippy Build Script
-# Builds and runs the iClippy app
+# Builds and runs iClippy from source. Requires only the Xcode Command Line Tools.
 
-set -e  # Exit on error
+set -e
 
-echo "🧹 Cleaning previous builds..."
-rm -rf ./build
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_PATH="$ROOT_DIR/dist/iClippy.app"
 
-echo "🔨 Building iClippy..."
-xcodebuild \
-    -project iClippy.xcodeproj \
-    -scheme iClippy \
-    -configuration Release \
-    -derivedDataPath ./build \
-    -destination 'generic/platform=macOS'
-
-APP_PATH="./build/Build/Products/Release/iClippy.app"
-
-if [ ! -d "$APP_PATH" ]; then
-    echo "❌ Build succeeded but app bundle not found at $APP_PATH"
-    exit 1
-fi
+"$ROOT_DIR/make-app.sh" "$ROOT_DIR/dist"
 
 echo "🛑 Stopping any running instances..."
 pkill -x iClippy 2>/dev/null || true
+sleep 1
 
 echo "🚀 Launching iClippy..."
 if ! open "$APP_PATH"; then
@@ -36,3 +24,5 @@ if ! open "$APP_PATH"; then
 fi
 
 echo "✅ Done! iClippy is now running in your menu bar."
+echo "ℹ️  Running from $APP_PATH — install with ./package.sh or drag it to /Applications"
+echo "   for a permanent setup, since the launch agent points at wherever it is run from."

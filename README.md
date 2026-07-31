@@ -34,11 +34,35 @@ A lightweight macOS clipboard manager that lives in your menu bar. iClippy captu
 
 ## Installation
 
+### Install from the DMG (recommended)
+
+1. Download the latest `iClippy-*.dmg` from [Releases](https://github.com/bridan234/iClippy/releases).
+
+2. Open it and drag **iClippy.app** onto the **Applications** folder.
+
+3. Clear the download quarantine flag:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/iClippy.app
+   ```
+
+   iClippy is signed ad-hoc rather than with a paid Apple Developer ID, so macOS
+   quarantines it after download. Without this step the first launch is blocked
+   with *"Apple could not verify iClippy is free of malware"* — you can also
+   allow it from **System Settings → Privacy & Security → Open Anyway**.
+
+4. Open iClippy from Applications, once. It installs its own login agent, so from
+   then on it starts automatically at login — see
+   [Always-on background agent](#always-on-background-agent).
+
+5. Grant Accessibility permission when prompted, so automatic pasting works.
+
 ### Building from Source
+
+Only the Xcode Command Line Tools are required — no full Xcode install.
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/iClippy.git
+   git clone https://github.com/bridan234/iClippy.git
    cd iClippy
    ```
 
@@ -47,7 +71,7 @@ A lightweight macOS clipboard manager that lives in your menu bar. iClippy captu
    ./build.sh
    ```
 
-   The app will be built in Release mode and automatically launched.
+   The app is built in Release mode into `./dist` and launched.
 
 ### Packaging (DMG/ZIP)
 
@@ -56,7 +80,24 @@ To create installable artifacts:
 ./package.sh
 ```
 
-The script produces `.dmg` and `.zip` files in `./dist`. Install by opening the DMG and dragging `iClippy.app` into `/Applications`.
+The script produces `.dmg` and `.zip` files in `./dist`. The DMG is a
+drag-to-install volume containing the app, an Applications shortcut, and setup
+instructions.
+
+Both scripts delegate the actual bundling to `make-app.sh`, which builds with
+Swift Package Manager, assembles `iClippy.app`, and code-signs it (ad-hoc by
+default; set `SIGN_IDENTITY` to use a real identity). A universal
+arm64 + x86_64 binary needs full Xcode; with only the Command Line Tools it
+falls back to a host-only build and says so.
+
+### Releasing via GitHub Actions
+
+Pushing a tag builds a universal app on a macOS runner and attaches the DMG and
+ZIP to a GitHub release — see [.github/workflows/release.yml](.github/workflows/release.yml):
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
 
 ### Manual Build with Xcode
 
@@ -85,11 +126,44 @@ iClippy needs two permissions for automatic pasting to work:
 
 **Note**: Without these permissions, iClippy will still capture and store your clipboard history. You'll just need to paste manually with `⌘V` after selecting an item.
 
-### Launch at Login
-- On macOS 13+, iClippy registers itself as a login item on first launch (default: on).
-- You can toggle **Start at login** in the footer of the popover.
-- Manage it in **System Settings → General → Login Items**.
-- On macOS 12, add iClippy manually in Login Items.
+### Always-on background agent
+
+**Start at Login is on by default.** On its first launch iClippy installs a
+per-user LaunchAgent at `~/Library/LaunchAgents/com.iclippy.app.plist`, which:
+
+- starts iClippy at every login (`RunAtLoad`), and
+- restarts it if it crashes or is force-quit (`KeepAlive` / `SuccessfulExit=false`).
+
+A clean quit is honoured, so **Quit iClippy** really does quit — it stays gone
+until the next login. Right-click the ✂️ menu bar icon to toggle **Start at
+Login** or to quit.
+
+Only one instance ever owns the menu bar; a duplicate launch exits immediately.
+The agent records an absolute path to the app, and iClippy rewrites the plist if
+it notices the app has moved (e.g. run from `~/Downloads`, later moved to
+`/Applications`), so install it where you intend to keep it.
+
+Note that the launch agent takes over at the *next* login. During the first
+session, the instance you opened manually is the one running.
+
+Check on it at any time:
+```bash
+launchctl print gui/$(id -u)/com.iclippy.app | grep -E 'state|pid|runs'
+```
+
+Turning **Start at Login** off removes the plist so iClippy won't return after
+logout; it deliberately does not tear down the loaded job, which would quit the
+app out from under you.
+
+### Uninstalling
+
+Right-click the menu bar icon → **Quit iClippy**, then:
+```bash
+rm -f ~/Library/LaunchAgents/com.iclippy.app.plist
+launchctl bootout gui/$(id -u)/com.iclippy.app 2>/dev/null
+rm -rf /Applications/iClippy.app
+rm -rf ~/Library/Application\ Support/iClippy
+```
 
 ## Release & Notarization
 
@@ -211,13 +285,17 @@ iClippy/
 │   │   └── ClipboardEntry.swift # Data model
 │   ├── Services/
 │   │   ├── ClipboardManager.swift # Clipboard monitoring
+│   │   ├── LoginItemManager.swift # Launch agent (start at login, keep alive)
 │   │   └── StorageManager.swift   # JSON persistence
 │   └── Views/
 │       ├── ContentView.swift     # Main UI
 │       └── Components/           # Reusable UI components
 ├── iClippy.xcodeproj/
 ├── Package.swift                 # SPM dependencies
-└── build.sh                      # Build script
+├── make-app.sh                   # Builds iClippy.app (SPM, no Xcode needed)
+├── build.sh                      # Build + launch
+├── package.sh                    # Build + DMG/ZIP installers
+└── release.sh                    # Signed + notarized release (needs Developer ID)
 ```
 
 ### Building

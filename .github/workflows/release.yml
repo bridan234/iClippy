@@ -1,0 +1,41 @@
+name: Release
+
+# Push a tag to publish an installable build:
+#     git tag v1.0.0 && git push origin v1.0.0
+# The .dmg and .zip are attached to the GitHub release. Can also be run manually
+# from the Actions tab, in which case the artifacts are uploaded to the run.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app and installers
+        run: ./package.sh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iClippy-installers
+          path: |
+            dist/*.dmg
+            dist/*.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.zip \
+            --title "iClippy $GITHUB_REF_NAME" \
+            --generate-notes

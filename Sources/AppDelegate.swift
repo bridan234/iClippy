@@ -18,6 +18,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let pasteActivationPollInterval: TimeInterval = 0.05
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The launch agent and a manual launch can both start iClippy, so make
+        // sure only one instance ever owns the menu bar. Exiting cleanly (status 0)
+        // matters: the agent's KeepAlive only respawns unclean exits, so this
+        // cannot turn into a respawn loop.
+        if anotherInstanceIsRunning() {
+            NSLog("iClippy: another instance is already running — exiting")
+            exit(EXIT_SUCCESS)
+        }
+
         // Set app activation policy to accessory (no dock icon)
         NSApp.setActivationPolicy(.accessory)
 
@@ -46,6 +55,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         requestAccessibilityPermissions()
     }
 
+    // MARK: - Single Instance
+
+    private func anotherInstanceIsRunning() -> Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+
+        let ourPID = ProcessInfo.processInfo.processIdentifier
+        let ourLaunchDate = NSRunningApplication.current.launchDate ?? Date()
+
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != ourPID }
+            .contains { other in
+                // Yield to the instance that started first. If launch dates are
+                // unavailable or identical, fall back to the lower PID so two
+                // simultaneous launches can't both decide to quit.
+                guard let otherLaunchDate = other.launchDate else {
+                    return other.processIdentifier < ourPID
+                }
+                if otherLaunchDate == ourLaunchDate {
+                    return other.processIdentifier < ourPID
+                }
+                return otherLaunchDate < ourLaunchDate
+            }
+    }
+
     // MARK: - Setup
 
     private func setupStatusBarItem() {
@@ -53,8 +86,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let button = statusItem?.button {
             button.title = "✂️"
-            button.action = #selector(togglePopover)
+            button.action = #selector(statusItemClicked)
             button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
     }
 
@@ -71,13 +105,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupGlobalHotkey() {
         // Register Command+Shift+V as the global hotkey
-        if let keyCombo = KeyCombo(key: .v, cocoaModifiers: [.command, .shift]) {
-            hotKey = HotKey(identifier: "TogglePopover", keyCombo: keyCombo, target: self, action: #selector(togglePopover))
-            hotKey?.register()
-            print("✅ Registered global hotkey: Command+Shift+V")
-        } else {
-            print("❌ Failed to create key combo for global hotkey")
-        }
+        let keyCombo = KeyCombo(key: .v, cocoaModifiers: [.command, .shift])
+        hotKey = HotKey(identifier: "TogglePopover", keyCombo: keyCombo, target: self, action: #selector(togglePopover))
+        hotKey?.register()
+        print("✅ Registered global hotkey: Command+Shift+V")
     }
 
     private func setupWorkspaceNotifications() {
@@ -170,6 +201,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let app = app else { return }
         guard app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
         previousApp = app
+    }
+
+    // MARK: - Status Item Menu
+
+    /// Left click toggles the clipboard popover; right click (or Control-click)
+    /// opens the settings menu.
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+
+        if let event = event, event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            showContextMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    private func showContextMenu() {
+        popover?.close()
+
+        let menu = NSMenu()
+
+        let startAtLogin = NSMenuItem(
+            title: "Start at Login",
+            action: #selector(toggleStartAtLogin),
+            keyEquivalent: ""
+        )
+        startAtLogin.target = self
+        startAtLogin.state = LoginItemManager.isStartAtLoginEnabled() ? .on : .off
+        menu.addItem(startAtLogin)
+
+        menu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "Quit iClippy", action: #selector(quitApp), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        // Attaching the menu makes the next click open it; detaching afterwards
+        // restores plain left-click-to-toggle behaviour.
+        statusItem?.menu = menu
+        statusItem?.button?.performClick(nil)
+        statusItem?.menu = nil
+    }
+
+    @objc private func toggleStartAtLogin() {
+        LoginItemManager.setStartAtLogin(!LoginItemManager.isStartAtLoginEnabled())
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     // MARK: - Popover Management
