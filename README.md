@@ -1,6 +1,6 @@
 # iClippy
 
-A lightweight macOS clipboard manager that lives in your menu bar. iClippy captures everything you copy, lets you search through your clipboard history, and enables quick paste back into any application.
+A lightweight macOS clipboard manager that lives in your menu bar. iClippy captures supported clipboard content, respecting private mode and privacy exclusions, lets you search through your clipboard history, and enables quick paste back into any application.
 
 ![macOS](https://img.shields.io/badge/macOS-12.0+-blue.svg)
 ![Swift](https://img.shields.io/badge/Swift-5.0+-orange.svg)
@@ -26,8 +26,18 @@ A lightweight macOS clipboard manager that lives in your menu bar. iClippy captu
 - **Rich Text**: Preserves formatting from documents and web pages
 - **Images**: Captures PNG and TIFF images with thumbnail previews
 
+### Privacy, search, and productivity
+- **Private Mode**: Pause recording from the menu bar context menu or Settings.
+- **Excluded Apps**: Configure bundle IDs; common password managers are excluded by default. Concealed, transient, and auto-generated pasteboard markers are ignored.
+- **Encrypted History**: AES-GCM encryption for history and image assets, using a local Keychain key. Clipboard content is never included in new logs.
+- **Filtered Search**: Combine text search with type, source app, pinned, and snippet filters. Existing entries without source metadata remain searchable under All apps.
+- **Image Text Recognition**: Apple Vision indexes screenshots on this Mac, without cloud requests. Toggle recognition in Settings; existing recognized text remains searchable when disabled.
+- **Named Snippets**: Use + for a new snippet, or right-click a text entry to save it as a snippet. Right-click a snippet to edit it. Snippets survive Clear unpinned and automatic cleanup.
+- **Paste as Plain Text**: Right-click an entry, or press Shift+Enter. For images with recognized text, this pastes the recognized text.
+- **Custom Shortcut**: Settings → Keyboard shortcut → Change. Unavailable shortcuts show an error and keep the previous working shortcut.
+
 ### ⚡ Advanced Features
-- **Smart Expiration**: Old entries automatically expire after 7 days (pinned items never expire)
+- **Smart Expiration**: Configurable retention, default 7 days, cleaned up every minute (pins and named snippets never expire)
 - **Duplicate Filtering**: Won't clutter your history with consecutive duplicates
 - **Hover Actions**: Pin, copy, or delete individual entries
 - **Clear All**: Bulk delete unpinned entries
@@ -118,13 +128,7 @@ iClippy needs two permissions for automatic pasting to work:
   2. Enable **iClippy** in the list
   3. You may need to restart iClippy
 
-#### 2. Automation Permission
-- **Why**: Allows iClippy to send keystrokes to other applications
-- **How to grant**:
-  1. Open **System Settings** → **Privacy & Security** → **Automation**
-  2. Find **iClippy** and enable **System Events**
-
-**Note**: Without these permissions, iClippy will still capture and store your clipboard history. You'll just need to paste manually with `⌘V` after selecting an item.
+Automatic paste uses keyboard events and only requires Accessibility permission. If the target app does not become active, or the clipboard changes while activation is pending, automatic paste is cancelled.
 
 ### Always-on background agent
 
@@ -208,6 +212,7 @@ export NOTARY_PROFILE="notarytool-profile"
 | `⌘⇧V` | Toggle clipboard history popover |
 | `↑` `↓` | Navigate through entries |
 | `Enter` | Paste selected entry |
+| `Shift+Enter` | Paste selected entry as plain text |
 | `Escape` | Close popover |
 
 ### Managing Entries
@@ -224,7 +229,7 @@ export NOTARY_PROFILE="notarytool-profile"
 - Content is copied to clipboard without automatic paste
 
 **Clear all unpinned entries**
-- Click the "Clear All" button in the footer
+- Click "Clear unpinned" in the footer (named snippets are also preserved)
 
 ## Architecture
 
@@ -237,7 +242,7 @@ iClippy is built with:
 ### Key Components
 
 - **ClipboardManager**: Monitors the system clipboard every 500ms
-- **StorageManager**: Persists clipboard history to JSON in Application Support
+- **StorageManager**: Serial background saves to encrypted history and separate encrypted image assets in Application Support
 - **AppDelegate**: Manages the menu bar item, popover, and paste orchestration
 - **ContentView**: Main SwiftUI interface with search and list display
 
@@ -245,10 +250,14 @@ iClippy is built with:
 
 Clipboard history is stored at:
 ```
-~/Library/Application Support/iClippy/clipboard_history.json
+~/Library/Application Support/iClippy/clipboard_history.encrypted
+~/Library/Application Support/iClippy/Images/<entry-id>.encrypted
 ```
 
-Images and rich text data are Base64-encoded within the JSON file.
+The encryption key is in your login Keychain under service `com.iclippy.history`.
+Legacy `clipboard_history.json` is migrated automatically, then removed only after encrypted persistence succeeds. Keep the Keychain key with any history backups. If history cannot be decrypted or decoded, iClippy preserves existing files and disables writes until the problem is resolved.
+
+Settings default to 500 entries and 100 MB of payload data. Automatic limits remove oldest unpinned entries; pins and snippets are exempt. Items larger than 10 MB are skipped. OCR is asynchronous and may take time to index existing images. Source attribution uses the frontmost app when clipboard changes are observed.
 
 ## Performance
 
@@ -260,7 +269,7 @@ Images and rich text data are Base64-encoded within the JSON file.
 ## Troubleshooting
 
 ### Automatic paste isn't working
-- Check that both Accessibility and Automation permissions are granted
+- Check that Accessibility permission is granted
 - Try restarting iClippy after granting permissions
 - Check Console.app for error messages from iClippy
 
@@ -270,7 +279,7 @@ Images and rich text data are Base64-encoded within the JSON file.
 
 ### Images aren't showing
 - Only PNG and TIFF formats are supported
-- Very large images may be truncated
+- Captured items over 10 MB are skipped
 
 ## Development
 
@@ -309,6 +318,10 @@ Or use Xcode for development with debugging:
 ```bash
 xcodebuild -project iClippy.xcodeproj -scheme iClippy -configuration Debug
 ```
+
+## Tests
+
+Run `./run-tests.sh` (Command Line Tools are sufficient; XCTest is not required) for legacy decoding, encrypted migration and asset cleanup, failed-key preservation, clipboard format round-trips, privacy exclusions, retention, sorting, search metadata, and on-device image text recognition.
 
 ## Contributing
 

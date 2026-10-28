@@ -3,11 +3,14 @@ import AppKit
 
 struct ClipboardItemView: View {
     let entry: ClipboardEntry
-    let isHovered: Bool
+    @State private var isHovered = false
     var isSelected: Bool = false
     let onPaste: () -> Void
+    let onPlainPaste: () -> Void
+    let onCopy: () -> Void
     let onPin: () -> Void
     let onDelete: () -> Void
+    let onSnippet: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -32,6 +35,9 @@ struct ClipboardItemView: View {
                         .foregroundColor(.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                if let name = entry.snippetName { Text(name).font(.headline).lineLimit(1) }
+                if let source = entry.sourceAppName { Text(source).font(.caption2).foregroundColor(.secondary) }
 
                 // Timestamp
                 Text(entry.relativeTimestamp)
@@ -59,12 +65,7 @@ struct ClipboardItemView: View {
                     .help(entry.isPinned ? "Unpin" : "Pin")
 
                     // Copy button
-                    Button(action: {
-                        // Copy to clipboard without pasting
-                        let pasteboard = NSPasteboard.general
-                        pasteboard.clearContents()
-                        pasteboard.setString(entry.content, forType: .string)
-                    }) {
+                    Button(action: onCopy) {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
@@ -91,6 +92,16 @@ struct ClipboardItemView: View {
                 : (isHovered ? Color(NSColor.selectedContentBackgroundColor).opacity(0.3) : Color.clear)
         )
         .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            Button("Copy", action: onCopy)
+            if entry.type != .image || !(entry.recognizedText ?? "").isEmpty {
+                Button(entry.type == .image ? "Paste recognized text" : "Paste as plain text", action: onPlainPaste)
+            }
+            if entry.type != .image { Button(entry.isSnippet ? "Edit snippet" : "Save as named snippet", action: onSnippet) }
+            Button(entry.isPinned ? "Unpin" : "Pin", action: onPin)
+            Button("Delete", action: onDelete)
+        }
         .onTapGesture {
             onPaste()
         }

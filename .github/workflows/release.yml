@@ -20,6 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run regression checks
+        run: ./run-tests.sh
+
       - name: Build app and installers
         run: ./package.sh
 
