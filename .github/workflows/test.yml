@@ -1,0 +1,16 @@
+name: Regression checks
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression checks
+        run: ./run-tests.sh
+      - name: Build release executable
+        run: swift build -c release

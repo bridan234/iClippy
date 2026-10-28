@@ -12,6 +12,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Global hotkey for toggling the popover
     private var hotKey: HotKey?
+    private var settingsWindow: NSWindow?
+    private var pasteGeneration = UUID()
 
     /// Paste timing tuning
     private let pasteActivationTimeout: TimeInterval = 1.0
@@ -50,6 +52,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Enable launch at login (default true)
         LoginItemManager.configureOnLaunch()
+
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettings), name: .iClippySettings, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(changeShortcut(_:)), name: .iClippyShortcut, object: nil)
 
         // Request accessibility permissions
         requestAccessibilityPermissions()
@@ -94,7 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPopover() {
         popover = NSPopover()
-        popover?.contentSize = NSSize(width: 326, height: 510)
+        popover?.contentSize = NSSize(width: 400, height: 570)
         popover?.behavior = .transient
         popover?.contentViewController = NSHostingController(
             rootView: ContentView()
@@ -104,11 +109,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupGlobalHotkey() {
-        // Register Command+Shift+V as the global hotkey
-        let keyCombo = KeyCombo(key: .v, cocoaModifiers: [.command, .shift])
-        hotKey = HotKey(identifier: "TogglePopover", keyCombo: keyCombo, target: self, action: #selector(togglePopover))
-        hotKey?.register()
-        print("✅ Registered global hotkey: Command+Shift+V")
+        let settings = AppSettings.shared
+        if !registerShortcut(code: settings.shortcutCode, modifiers: settings.shortcutModifiers) {
+            settings.shortcutError = "The saved shortcut is unavailable. Choose another in Settings."
+        }
+    }
+
+    private func registerShortcut(code: Int, modifiers: UInt) -> Bool {
+        guard let combo = KeyCombo(QWERTYKeyCode: code, cocoaModifiers: NSEvent.ModifierFlags(rawValue: modifiers)) else { return false }
+        hotKey?.unregister()
+        let candidate = HotKey(identifier: "TogglePopover", keyCombo: combo, target: self, action: #selector(togglePopover))
+        if candidate.register() { hotKey = candidate; return true }
+        _ = hotKey?.register()
+        return false
+    }
+
+    @objc private func changeShortcut(_ notification: Notification) {
+        guard let info = notification.userInfo, let code = info["code"] as? Int,
+              let flags = info["modifiers"] as? UInt, let label = info["label"] as? String else { return }
+        let settings = AppSettings.shared
+        guard registerShortcut(code: code, modifiers: flags) else {
+            settings.shortcutError = "That shortcut could not be registered. The previous shortcut is still active."
+            return
+        }
+        settings.shortcutCode = code; settings.shortcutModifiers = flags; settings.shortcutLabel = label
+        settings.shortcutError = ""
+    }
+
+    @objc private func showSettings() {
+        popover?.close()
+        if settingsWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "iClippy Settings"
+            window.contentViewController = NSHostingController(rootView: SettingsView())
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func togglePrivateMode() { AppSettings.shared.privateMode.toggle() }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        clipboardManager?.stopMonitoring()
+        StorageManager.shared.flush()
     }
 
     private func setupWorkspaceNotifications() {
@@ -231,6 +278,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startAtLogin.state = LoginItemManager.isStartAtLoginEnabled() ? .on : .off
         menu.addItem(startAtLogin)
 
+        let privacy = NSMenuItem(title: "Private Mode", action: #selector(togglePrivateMode), keyEquivalent: "")
+        privacy.target = self
+        privacy.state = AppSettings.shared.privateMode ? .on : .off
+        menu.addItem(privacy)
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit iClippy", action: #selector(quitApp), keyEquivalent: "q")
@@ -265,6 +319,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
 
+            popover.contentViewController?.view.window?.identifier = NSUserInterfaceItemIdentifier("iClippyPopover")
+
             // Activate the popover window
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -273,11 +329,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Paste Orchestration
 
     /// Handles pasting a clipboard entry into the previously active application
-    func pasteEntry(_ entry: ClipboardEntry) {
-        print("🔵 pasteEntry called for: \(entry.preview)")
+    func pasteEntry(_ entry: ClipboardEntry, plainText: Bool = false) {
+        guard !plainText || entry.type != .image || !(entry.recognizedText ?? "").isEmpty else {
+            clipboardManager?.statusMessage = "No recognized text is available for this image yet."
+            return
+        }
 
         // Copy the entry to the system clipboard
-        clipboardManager?.copyToClipboard(entry)
+        clipboardManager?.copyToClipboard(entry, plainText: plainText)
 
         // Close the popover
         popover?.close()
@@ -294,103 +353,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func activateAndPaste(_ app: NSRunningApplication) {
+        let generation = UUID()
+        pasteGeneration = generation
+        let changeCount = NSPasteboard.general.changeCount
         app.activate(options: [.activateIgnoringOtherApps])
-
-        waitForActivation(of: app, timeout: pasteActivationTimeout) { [weak self] in
-            self?.simulatePaste()
+        waitForActivation(of: app, timeout: pasteActivationTimeout) { [weak self] activated in
+            guard let self, self.pasteGeneration == generation else { return }
+            guard activated, !app.isTerminated,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+                  NSPasteboard.general.changeCount == changeCount else {
+                self.clipboardManager?.statusMessage = "Automatic paste cancelled because the destination or clipboard changed. Use ⌘V to paste manually."
+                return
+            }
+            self.simulatePaste()
         }
     }
 
-    private func waitForActivation(of app: NSRunningApplication, timeout: TimeInterval, completion: @escaping () -> Void) {
+    private func waitForActivation(of app: NSRunningApplication, timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
         let deadline = Date().addingTimeInterval(timeout)
-
         func check() {
-            if app.isActive || NSWorkspace.shared.frontmostApplication?.bundleIdentifier == app.bundleIdentifier {
-                completion()
-                return
+            if !app.isTerminated && NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+                completion(true); return
             }
-
-            if Date() >= deadline {
-                completion()
-                return
-            }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + pasteActivationPollInterval) {
-                check()
-            }
+            if app.isTerminated || Date() >= deadline { completion(false); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + pasteActivationPollInterval) { check() }
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + pasteActivationPollInterval) {
-            check()
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + pasteActivationPollInterval) { check() }
     }
 
-    private func simulatePaste() {
-        // Method 1: Try AppleScript (requires Automation permission)
-        let success = simulatePasteWithAppleScript()
-
-        if !success {
-            // Method 2: Fallback to CGEvent (requires Accessibility permission)
-            simulatePasteWithCGEvent()
-        }
-    }
-
-    private func simulatePasteWithAppleScript() -> Bool {
-        let script = """
-        tell application "System Events"
-            keystroke "v" using command down
-        end tell
-        """
-
-        var error: NSDictionary?
-        if let scriptObject = NSAppleScript(source: script) {
-            scriptObject.executeAndReturnError(&error)
-
-            if let error = error {
-                let errorCode = error["NSAppleScriptErrorNumber"] as? Int ?? 0
-
-                if errorCode == -1743 {
-                    // Automation permission denied
-                    print("⚠️ AppleScript paste failed: Automation permission not granted")
-                    showAutomationPermissionAlert()
-                } else {
-                    print("⚠️ AppleScript paste failed: \(error)")
-                }
-                return false
-            }
-
-            print("✅ Paste via AppleScript succeeded")
-            return true
-        }
-
-        return false
-    }
-
-    private func showAutomationPermissionAlert() {
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.messageText = "Automation Permission Required"
-            alert.informativeText = """
-            iClippy needs permission to control System Events for automatic pasting.
-
-            Please grant permission in:
-            System Settings → Privacy & Security → Automation → iClippy → System Events
-
-            Without this permission, content will be copied to clipboard but you'll need to paste manually with ⌘V.
-            """
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "Open System Settings")
-            alert.addButton(withTitle: "OK")
-
-            let response = alert.runModal()
-            if response == .alertFirstButtonReturn {
-                // Open System Settings to Privacy & Security
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-        }
-    }
+    private func simulatePaste() { simulatePasteWithCGEvent() }
 
     private func simulatePasteWithCGEvent() {
         // Check if we have Accessibility permission
@@ -425,17 +416,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     deinit {
         hotKey?.unregister()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
     }
 }
 
 // MARK: - Environment Key for Paste Handler
 
 private struct PasteHandlerKey: EnvironmentKey {
-    static let defaultValue: (ClipboardEntry) -> Void = { _ in }
+    static let defaultValue: (ClipboardEntry, Bool) -> Void = { _, _ in }
 }
 
 extension EnvironmentValues {
-    var pasteHandler: (ClipboardEntry) -> Void {
+    var pasteHandler: (ClipboardEntry, Bool) -> Void {
         get { self[PasteHandlerKey.self] }
         set { self[PasteHandlerKey.self] = newValue }
     }

@@ -1,169 +1,124 @@
 import Foundation
+import CryptoKit
+import Security
 
-/// Manages persistent storage of clipboard history to disk
-class StorageManager {
-    // MARK: - Properties
-
-    /// Shared singleton instance
+/// Serial background persistence. Images are separate encrypted assets, never embedded in new history files.
+final class StorageManager {
     static let shared = StorageManager()
+    private let queue = DispatchQueue(label: "com.iclippy.storage", qos: .utility)
+    private let directory: URL
+    private let assets: URL
+    private var encryptionKey: SymmetricKey?
+    private var canSave = false
+    private(set) var loadError: String?
 
-    /// URL to the application support directory
-    private let appSupportDirectory: URL
-
-    /// URL to the clipboard history JSON file
-    private let historyFileURL: URL
-
-    /// Name of the history file
-    private let historyFileName = "clipboard_history.json"
-
-    // MARK: - Initialization
-
-    private init() {
-        // Get the Application Support directory
-        let fileManager = FileManager.default
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        self.appSupportDirectory = appSupport.appendingPathComponent("iClippy", isDirectory: true)
-        self.historyFileURL = appSupportDirectory.appendingPathComponent(historyFileName)
-
-        // Create the directory if it doesn't exist
-        createDirectoryIfNeeded()
+    init(directory: URL? = nil, key: SymmetricKey? = nil) {
+        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("iClippy")
+        assets = self.directory.appendingPathComponent("Images")
+        encryptionKey = key
     }
 
-    // MARK: - Directory Management
-
-    /// Creates the application support directory if it doesn't exist
-    private func createDirectoryIfNeeded() {
-        let fileManager = FileManager.default
-
-        if !fileManager.fileExists(atPath: appSupportDirectory.path) {
-            do {
-                try fileManager.createDirectory(
-                    at: appSupportDirectory,
-                    withIntermediateDirectories: true,
-                    attributes: nil
-                )
-                print("✅ Created application support directory at: \(appSupportDirectory.path)")
-            } catch {
-                print("❌ Failed to create application support directory: \(error.localizedDescription)")
-            }
+    private func key() throws -> SymmetricKey {
+        if let encryptionKey { return encryptionKey }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.iclippy.history", kSecAttrAccount as String: "encryption-key",
+            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecSuccess, let data = item as? Data, data.count == 32 {
+            let value = SymmetricKey(data: data); encryptionKey = value; return value
         }
+        guard status == errSecItemNotFound else { throw StorageError.keyUnavailable }
+        // Never generate a replacement key if encrypted history already exists.
+        guard !FileManager.default.fileExists(atPath: historyURL.path) else { throw StorageError.keyUnavailable }
+        let value = SymmetricKey(size: .bits256)
+        var add = query
+        add.removeValue(forKey: kSecReturnData as String)
+        add.removeValue(forKey: kSecMatchLimit as String)
+        add[kSecValueData as String] = value.withUnsafeBytes { Data($0) }
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw StorageError.keyUnavailable }
+        encryptionKey = value
+        return value
     }
 
-    // MARK: - Save Operations
+    private var historyURL: URL { directory.appendingPathComponent("clipboard_history.encrypted") }
+    private var legacyURL: URL { directory.appendingPathComponent("clipboard_history.json") }
 
-    /// Saves clipboard history to disk
-    /// - Parameter entries: Array of ClipboardEntry objects to save
-    /// - Returns: True if save was successful, false otherwise
-    @discardableResult
-    func saveHistory(_ entries: [ClipboardEntry]) -> Bool {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-
-            let data = try encoder.encode(entries)
-            try data.write(to: historyFileURL, options: .atomic)
-
-            print("✅ Saved \(entries.count) clipboard entries to disk")
-            return true
-        } catch {
-            print("❌ Failed to save clipboard history: \(error.localizedDescription)")
-            return false
-        }
-    }
-
-    // MARK: - Load Operations
-
-    /// Loads clipboard history from disk
-    /// - Returns: Array of ClipboardEntry objects, or empty array if loading fails
     func loadHistory() -> [ClipboardEntry] {
-        // Check if file exists
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: historyFileURL.path) else {
-            print("ℹ️ No existing history file found, starting fresh")
-            return []
-        }
-
-        do {
-            let data = try Data(contentsOf: historyFileURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-
-            let entries = try decoder.decode([ClipboardEntry].self, from: data)
-            print("✅ Loaded \(entries.count) clipboard entries from disk")
-
-            // Filter out expired entries
-            let validEntries = entries.filter { !$0.isExpired() }
-            let expiredCount = entries.count - validEntries.count
-
-            if expiredCount > 0 {
-                print("🗑️ Removed \(expiredCount) expired entries")
-                // Save the filtered list back to disk
-                saveHistory(validEntries)
+        queue.sync {
+            do {
+                try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+                let cipherKey = try key()
+                let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+                var entries: [ClipboardEntry] = []
+                if FileManager.default.fileExists(atPath: historyURL.path) {
+                    let data = try Data(contentsOf: historyURL)
+                    entries = try decoder.decode([ClipboardEntry].self, from: decrypt(data, key: cipherKey))
+                    for i in entries.indices {
+                        if let name = entries[i].imageFileName {
+                            guard name == entries[i].id.uuidString + ".encrypted" else { throw StorageError.invalidAsset }
+                            entries[i].imageData = try decrypt(Data(contentsOf: assets.appendingPathComponent(name)), key: cipherKey)
+                        }
+                    }
+                } else if FileManager.default.fileExists(atPath: legacyURL.path) {
+                    entries = try decoder.decode([ClipboardEntry].self, from: Data(contentsOf: legacyURL))
+                }
+                canSave = true
+                // Migration only removes the legacy file after the new store is durably written.
+                try write(entries, key: cipherKey)
+                return entries
+            } catch {
+                canSave = false
+                loadError = "History could not be opened. Your existing files have been preserved. Check Keychain access and disk space, then restart iClippy."
+                return []
             }
-
-            return validEntries
-        } catch {
-            print("❌ Failed to load clipboard history: \(error.localizedDescription)")
-            return []
         }
     }
 
-    // MARK: - Delete Operations
-
-    /// Deletes all clipboard history from disk
-    /// - Returns: True if deletion was successful, false otherwise
-    @discardableResult
-    func deleteHistory() -> Bool {
-        let fileManager = FileManager.default
-
-        guard fileManager.fileExists(atPath: historyFileURL.path) else {
-            print("ℹ️ No history file to delete")
-            return true
-        }
-
-        do {
-            try fileManager.removeItem(at: historyFileURL)
-            print("✅ Deleted clipboard history file")
-            return true
-        } catch {
-            print("❌ Failed to delete clipboard history: \(error.localizedDescription)")
-            return false
+    func saveHistory(_ entries: [ClipboardEntry], completion: ((Bool) -> Void)? = nil) {
+        queue.async {
+            var success = false
+            do {
+                guard self.canSave else { throw StorageError.keyUnavailable }
+                try self.write(entries, key: self.key())
+                success = true
+            } catch { NSLog("iClippy: history save failed; clipboard contents omitted") }
+            let result = success
+            DispatchQueue.main.async { completion?(result) }
         }
     }
 
-    // MARK: - Utility Methods
+    func flush() { queue.sync {} }
 
-    /// Returns the size of the history file in bytes
-    var historyFileSize: Int64? {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: historyFileURL.path) else {
-            return nil
+    private func write(_ entries: [ClipboardEntry], key: SymmetricKey) throws {
+        var stored = entries
+        var referenced = Set<String>()
+        for i in stored.indices {
+            if let image = stored[i].imageData {
+                let name = stored[i].id.uuidString + ".encrypted"
+                let url = assets.appendingPathComponent(name)
+                if !FileManager.default.fileExists(atPath: url.path) { try secureWrite(encrypt(image, key: key), to: url) }
+                stored[i].imageFileName = name
+                stored[i].imageData = nil
+                referenced.insert(name)
+            }
         }
-
-        do {
-            let attributes = try fileManager.attributesOfItem(atPath: historyFileURL.path)
-            return attributes[.size] as? Int64
-        } catch {
-            print("❌ Failed to get file size: \(error.localizedDescription)")
-            return nil
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try secureWrite(encrypt(encoder.encode(stored), key: key), to: historyURL)
+        if FileManager.default.fileExists(atPath: legacyURL.path) { try FileManager.default.removeItem(at: legacyURL) }
+        for file in try FileManager.default.contentsOfDirectory(at: assets, includingPropertiesForKeys: nil)
+            where file.pathExtension == "encrypted" && !referenced.contains(file.lastPathComponent) {
+            try FileManager.default.removeItem(at: file)
         }
     }
 
-    /// Returns a human-readable file size string
-    var historyFileSizeFormatted: String {
-        guard let size = historyFileSize else {
-            return "0 KB"
-        }
-
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: size)
+    private func secureWrite(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
-
-    /// Returns the path to the history file
-    var historyFilePath: String {
-        return historyFileURL.path
-    }
+    private func encrypt(_ data: Data, key: SymmetricKey) throws -> Data { try AES.GCM.seal(data, using: key).combined! }
+    private func decrypt(_ data: Data, key: SymmetricKey) throws -> Data { try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key) }
+    private enum StorageError: Error { case keyUnavailable, invalidAsset }
 }

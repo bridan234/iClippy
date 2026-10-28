@@ -97,6 +97,11 @@ struct ClipboardEntry: Identifiable, Codable, Equatable {
     var isPinned: Bool
     var imageData: Data?
     var rtfData: Data?
+    var sourceAppName: String?
+    var sourceBundleID: String?
+    var recognizedText: String?
+    var snippetName: String?
+    var imageFileName: String?
 
     init(
         id: UUID = UUID(),
@@ -147,14 +152,21 @@ struct ClipboardEntry: Identifiable, Codable, Equatable {
     }
 
     /// Returns true if this entry has expired based on the given retention days
-    func isExpired(retentionDays: Int = 3) -> Bool {
+    func isExpired(retentionDays: Int = 7) -> Bool {
         // Pinned entries never expire
-        if isPinned {
+        if isPinned || isSnippet {
             return false
         }
 
         let expirationDate = Calendar.current.date(byAdding: .day, value: retentionDays, to: timestamp)
         return Date() > (expirationDate ?? Date())
+    }
+
+    var isSnippet: Bool { snippetName != nil }
+
+    var searchableText: String {
+        [content, recognizedText, snippetName, sourceAppName, sourceBundleID]
+            .compactMap { $0 }.joined(separator: " ")
     }
 
     // MARK: - Equatable
